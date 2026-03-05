@@ -263,18 +263,20 @@ def status():
         properties = data.get("result", {}).get("properties", [])
         log.info("Raw properties: %s", properties)
 
+        # Derive gate state from the "status" hex property.
+        # Format: [prefix 2 hex][bleCode 8 hex][state_byte 2 hex][...]
+        # state_byte: 02 = open, 03 = closed
         state = "unknown"
         for prop in properties:
-            if prop.get("key") == "Switch_1":
-                val = prop.get("value")
-                # Switch_1: "0" = closed, "2" = open (confirmed via API capture)
-                if val == "2":
-                    state = "open"
-                elif val == "0":
-                    state = "closed"
-                else:
-                    state = "unknown"
-                log.info("Switch_1 raw value: %s -> state=%s", val, state)
+            if prop.get("key") == "status":
+                raw = prop.get("value", "")
+                if len(raw) >= 12:
+                    state_byte = raw[10:12]
+                    if state_byte == "02":
+                        state = "open"
+                    elif state_byte == "03":
+                        state = "closed"
+                    log.info("status hex: %s -> state_byte=%s -> state=%s", raw, state_byte, state)
                 break
         # Build response with all properties except Switch_1 (already mapped to state)
         result = {"state": state}
