@@ -248,7 +248,10 @@ def status():
         is_on = False
         for prop in data.get("result", {}).get("properties", []):
             if prop.get("key") == "Switch_1":
-                is_on = prop.get("value") == "1"
+                # Sliding gate: 1 = fully open, 0 = fully closed, 2 = stopped/moving
+                val = prop.get("value")
+                is_on = (val == "1")
+                log.info("Switch_1 raw value: %s", val)
                 break
 
         state = "open" if is_on else "closed"
@@ -273,34 +276,59 @@ def close_gate():
 
 
 def _send_command(turn_on: bool):
-    """Send open/close command using exact same format as original gist."""
-    body = {
-        "deviceId":      int(session["device_id"]),
-        "userId":        int(session["user_id"]),
-        "propertyValue": {"Switch_1": 1 if turn_on else 0},
-        "action":        "On" if turn_on else "Off",  # API always uses On/Off per original gist
-    }
-    log.info("Sending command: %s", body)
-    data = api_post("/wifi/sendWifiCode", body, token=session["token"], user_id=session["user_id"])
+    """
+    Send open/close command for WiFi+BLE Sliding Gate.
+    This device uses relay channels as property keys:
+      "1" = Open relay
+      "2" = Close relay
+      "3" = Stop relay
+      "4" = Pedestrian relay
+    """
+    # Channel 1 = Open, Channel 2 = Close
+    channel = "1" if turn_on else "2"
+    label   = "open" if turn_on else "close"
 
-    msg = decode_msg(data.get("msg", "")) if data else "no response"
-    log.info("Command response: code=%s msg=%s", data.get("code") if data else "none", msg)
+    # Strategies to try in order
+    strategies = [
+        # Relay channel trigger - most likely for sliding gate boards
+        {"propertyValue": {channel: "1"}, "action": "On"},
+        {"propertyValue": {channel: 1},   "action": "On"},
+        # Switch_1 with string values
+        {"propertyValue": {"Switch_1": "1" if turn_on else "0"}, "action": "On" if turn_on else "Off"},
+        # Switch_1 with int values
+        {"propertyValue": {"Switch_1": 1 if turn_on else 0}, "action": "On" if turn_on else "Off"},
+        # Switch_1 with Open/Close action
+        {"propertyValue": {"Switch_1": 1 if turn_on else 0}, "action": "Open" if turn_on else "Close"},
+    ]
 
-    if data and data.get("code") == "0":
-        log.info("Gate command SUCCESS")
-        return jsonify({"success": True})
+    for i, strategy in enumerate(strategies):
+        body = {
+            "deviceId": int(session["device_id"]),
+            "userId":   int(session["user_id"]),
+            **strategy,
+        }
+        log.info("Strategy %d (%s): propertyValue=%s action=%s",
+                 i + 1, label, strategy["propertyValue"], strategy["action"])
 
-    # Token expired — re-login and retry once
-    if handle_token_expiry(msg):
-        if ensure_session():
-            data = api_post("/wifi/sendWifiCode", body, token=session["token"], user_id=session["user_id"])
-            if data and data.get("code") == "0":
-                log.info("Gate command SUCCESS after re-login")
-                return jsonify({"success": True})
-            msg = decode_msg(data.get("msg", "")) if data else "no response"
+        data = api_post("/wifi/sendWifiCode", body, token=session["token"], user_id=session["user_id"])
+        msg  = decode_msg(data.get("msg", "")) if data else "no response"
+        log.info("Strategy %d response: code=%s msg=%s", i + 1, data.get("code") if data else "none", msg)
 
-    log.error("Gate command FAILED: %s", msg)
-    return jsonify({"success": False, "error": msg}), 500
+        if data and data.get("code") == "0":
+            log.info("Gate command SUCCESS with strategy %d", i + 1)
+            return jsonify({"success": True})
+
+        if handle_token_expiry(msg):
+            if ensure_session():
+                data = api_post("/wifi/sendWifiCode", body, token=session["token"], user_id=session["user_id"])
+                if data and data.get("code") == "0":
+                    log.info("Gate command SUCCESS with strategy %d after re-login", i + 1)
+                    return jsonify({"success": True})
+
+        log.warning("Strategy %d failed: %s", i + 1, msg)
+
+    log.error("All strategies failed for %s command", label)
+    return jsonify({"success": False, "error": "All strategies failed — check logs"}), 500
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
