@@ -24,7 +24,7 @@ from threading import Lock
 from flask import Flask, jsonify
 
 # ── Config ────────────────────────────────────────────────────────────────────
-API_BASE_URL  = "http://47.52.111.184:9010/xhouseAppEncapsulation"
+API_BASE_URL  = "https://xhouseiot.giantautogate.com/xhouseAppEncapsulation"
 HMAC_SECRET   = "juge2020@giigleiot"
 SAAS_CODE     = "JUJIANG"
 PLATFORM_CODE = "giigle"
@@ -82,7 +82,7 @@ def base_headers(token=None, user_id=None):
         "signature":    signature,
         "content-type": "application/json; charset=utf-8",
         "user-agent":   "okhttp/4.2.0",
-        "host":         "47.52.111.184:9010",
+        "host":         "xhouseiot.giantautogate.com",
         "connection":   "Keep-Alive",
     }
     if token:
