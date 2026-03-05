@@ -1,0 +1,8 @@
+services:
+  xhouse-gate:
+    build: .
+    container_name: xhouse-gate
+    restart: always
+    ports:
+      - "8765:8765"
+
