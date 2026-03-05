@@ -263,18 +263,28 @@ def status():
         properties = data.get("result", {}).get("properties", [])
         log.info("Raw properties: %s", properties)
 
-        is_on = False
+        state = "unknown"
         for prop in properties:
             if prop.get("key") == "Switch_1":
                 val = prop.get("value")
-                # Switch_1: "0" = open, "1" = closed (confirmed via physical testing)
-                is_on = (val == "0")
-                log.info("Switch_1 raw value: %s -> is_on=%s", val, is_on)
+                # Switch_1: "0" = closed, "2" = open (confirmed via API capture)
+                if val == "2":
+                    state = "open"
+                elif val == "0":
+                    state = "closed"
+                else:
+                    state = "unknown"
+                log.info("Switch_1 raw value: %s -> state=%s", val, state)
                 break
+        # Build response with all properties except Switch_1 (already mapped to state)
+        result = {"state": state}
+        for prop in properties:
+            key = prop.get("key")
+            if key and key != "Switch_1":
+                result[key] = prop.get("value")
 
-        state = "open" if is_on else "closed"
         log.info("Status: %s", state)
-        return jsonify({"state": state})
+        return jsonify(result)
 
 
 @app.route("/open", methods=["POST"])
