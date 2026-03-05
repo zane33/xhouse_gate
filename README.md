@@ -104,7 +104,7 @@ Queries the X-House cloud for the current gate position.
 
 | Field              | Description                                                                 |
 |--------------------|-----------------------------------------------------------------------------|
-| `state`            | Gate position: `"open"`, `"closed"`, or `"unknown"`                         |
+| `state`            | Gate state: `"open"`, `"closed"`, `"opening"`, `"closing"`, or `"unknown"`  |
 | `status`           | Raw hex status string from the device                                       |
 | `menuCode`         | Raw hex menu configuration                                                  |
 | `boardVersion`     | Firmware version of the gate controller                                     |
@@ -147,11 +147,12 @@ Sends the close command sequence (SET_MENU steps 1 & 2).
 
 All configuration is done through environment variables:
 
-| Variable          | Required | Default | Description                              |
-|-------------------|----------|---------|------------------------------------------|
-| `XHOUSE_EMAIL`    | Yes      | —       | Your X-House IOT account email           |
-| `XHOUSE_PASSWORD` | Yes      | —       | Your X-House IOT account password        |
-| `PORT`            | No       | `8765`  | HTTP port the server listens on          |
+| Variable               | Required | Default | Description                                          |
+|------------------------|----------|---------|------------------------------------------------------|
+| `XHOUSE_EMAIL`         | Yes      | —       | Your X-House IOT account email                       |
+| `XHOUSE_PASSWORD`      | Yes      | —       | Your X-House IOT account password                    |
+| `PORT`                 | No       | `8765`  | HTTP port the server listens on                      |
+| `GATE_TRANSITION_TIME` | No       | `30`    | Seconds the gate takes to fully open/close            |
 
 ---
 
@@ -280,28 +281,13 @@ Portainer will clone the repo, build the image, and start the container. You can
 
 Add the following to your `configuration.yaml` to create a gate cover entity using the [REST](https://www.home-assistant.io/integrations/rest/), [RESTful Command](https://www.home-assistant.io/integrations/rest_command/), and [Template](https://www.home-assistant.io/integrations/template/) integrations.
 
-The `input_number.front_gate_transition_time` lets you configure how long (in seconds) the gate takes to fully open or close. During this window the cover will show as "opening" or "closing" in Home Assistant.
+The server tracks transition states automatically — after an open/close command it will report `"opening"` or `"closing"` until the gate reaches its target state or the `GATE_TRANSITION_TIME` timeout expires.
 
 ```yaml
-# Transition time (seconds) — adjust to match your gate's travel time
-input_number:
-  front_gate_transition_time:
-    name: Front Gate Transition Time
-    min: 5
-    max: 120
-    step: 1
-    initial: 30
-    unit_of_measurement: "s"
-
-# Timer used to track opening/closing transition
-timer:
-  front_gate_transition:
-    name: Front Gate Transition
-
 # Sensor to poll gate status
 rest:
   - resource: http://<server-ip>:8765/status
-    scan_interval: 30
+    scan_interval: 10
     sensor:
       - name: "Front Gate Status"
         value_template: "{{ value_json.state }}"
@@ -315,50 +301,17 @@ rest_command:
     url: http://<server-ip>:8765/close
     method: post
 
-# Template cover with transition states
+# Template cover that maps sensor state to a cover entity
 template:
   - cover:
       - name: Front Gate
         device_class: gate
-        state: >
-          {% if is_state('timer.front_gate_transition', 'active') %}
-            {{ states('input_text.front_gate_direction') }}
-          {% else %}
-            {{ states('sensor.front_gate_status') }}
-          {% endif %}
+        state: "{{ states('sensor.front_gate_status') }}"
         open_cover:
-          - action: rest_command.open_front_gate
-          - action: timer.start
-            target:
-              entity_id: timer.front_gate_transition
-            data:
-              duration: "{{ states('input_number.front_gate_transition_time') | int }}"
-          - action: input_text.set_value
-            target:
-              entity_id: input_text.front_gate_direction
-            data:
-              value: opening
+          action: rest_command.open_front_gate
         close_cover:
-          - action: rest_command.close_front_gate
-          - action: timer.start
-            target:
-              entity_id: timer.front_gate_transition
-            data:
-              duration: "{{ states('input_number.front_gate_transition_time') | int }}"
-          - action: input_text.set_value
-            target:
-              entity_id: input_text.front_gate_direction
-            data:
-              value: closing
-
-# Helper to track the direction of the current transition
-input_text:
-  front_gate_direction:
-    name: Front Gate Direction
-    initial: ""
+          action: rest_command.close_front_gate
 ```
-
-> **Note:** Adjust the `front_gate_transition_time` initial value to match how long your gate takes to travel. The cover state will show "opening"/"closing" during this period, then revert to the REST sensor's reported state.
 
 Replace `<server-ip>` with the IP or hostname of the machine running the container.
 

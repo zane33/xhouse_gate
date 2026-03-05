@@ -30,9 +30,10 @@ SAAS_CODE     = "JUJIANG"
 PLATFORM_CODE = "giigle"
 APP_TYPE      = "android"
 
-EMAIL    = os.environ.get("XHOUSE_EMAIL", "")
-PASSWORD = os.environ.get("XHOUSE_PASSWORD", "")
-PORT     = int(os.environ.get("PORT", "8765"))
+EMAIL              = os.environ.get("XHOUSE_EMAIL", "")
+PASSWORD           = os.environ.get("XHOUSE_PASSWORD", "")
+PORT               = int(os.environ.get("PORT", "8765"))
+TRANSITION_TIMEOUT = int(os.environ.get("GATE_TRANSITION_TIME", "30"))  # seconds
 
 GATE_KEYWORDS = ["gate", "xh-sgc01", "sgc01", "sliding", "swing", "barrier", "wifi+ble", "garage", "door"]
 
@@ -54,7 +55,10 @@ session = {
     "user_id":   None,
     "device_id": None,
     "device":    None,
-    "ble_code":  None,   # 8-char hex code used in SET_MENU commands (e.g. "95432482")
+    "ble_code":  None,     # 8-char hex code used in SET_MENU commands (e.g. "95432482")
+    "last_state": None,    # last settled open/closed state
+    "last_command": None,  # "open" or "close" — set when a command is sent
+    "command_time": 0,     # time.time() when the last command was sent
 }
 
 
@@ -265,19 +269,52 @@ def status():
 
         # Derive gate state from the "status" hex property.
         # Format: [prefix 2 hex][bleCode 8 hex][state_byte 2 hex][...]
-        # state_byte: 02 = open, 03 = closed
-        state = "unknown"
+        # state_byte: 00 = transitioning, 02 = open, 03 = closed
+        raw_state = "unknown"
         for prop in properties:
             if prop.get("key") == "status":
                 raw = prop.get("value", "")
                 if len(raw) >= 12:
                     state_byte = raw[10:12]
                     if state_byte == "02":
-                        state = "open"
+                        raw_state = "open"
                     elif state_byte == "03":
-                        state = "closed"
-                    log.info("status hex: %s -> state_byte=%s -> state=%s", raw, state_byte, state)
+                        raw_state = "closed"
+                    elif state_byte == "00":
+                        raw_state = "transitioning"
+                    log.info("status hex: %s -> state_byte=%s -> raw_state=%s", raw, state_byte, raw_state)
                 break
+
+        # Determine if the gate is currently transitioning.
+        # The API may report "transitioning" (state_byte 00), OR it may
+        # still report the old settled state before updating (e.g. "closed"
+        # right after an open command). Use the last command + timeout to
+        # detect both cases.
+        transitioning = False
+        last_cmd = session.get("last_command")
+        cmd_age = time.time() - session.get("command_time", 0)
+
+        if cmd_age < TRANSITION_TIMEOUT and last_cmd:
+            target = "open" if last_cmd == "open" else "closed"
+            if raw_state != target:
+                # API hasn't reached target state yet — gate is still moving
+                transitioning = True
+
+        if transitioning:
+            state = "opening" if last_cmd == "open" else "closing"
+        elif raw_state == "transitioning":
+            # state_byte 00 but no recent command — use last known state
+            state = session.get("last_state") or "unknown"
+        else:
+            state = raw_state
+
+        # Remember the last settled state and clear command when target reached
+        if state in ("open", "closed"):
+            session["last_state"] = state
+            if last_cmd and cmd_age < TRANSITION_TIMEOUT:
+                target = "open" if last_cmd == "open" else "closed"
+                if state == target:
+                    session["last_command"] = None
         # Build response with all properties except Switch_1 (already mapped to state)
         result = {"state": state}
         for prop in properties:
@@ -372,6 +409,10 @@ def _send_command(turn_on: bool):
         if not data or data.get("code") != "0":
             log.error("%s FAILED: %s", label, msg)
             return jsonify({"success": False, "error": f"{label} failed: {msg}"}), 500
+
+    # Track the command for transitional state detection
+    session["last_command"] = "open" if turn_on else "close"
+    session["command_time"] = time.time()
 
     # Upload log to match app behaviour
     _upload_log(label)
