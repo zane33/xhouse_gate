@@ -309,10 +309,9 @@ def _send_set_menu(ble_code: str, cmd_byte: str, step: str) -> dict | None:
     """
     Send a single SET_MENU command.
 
-    Value format (14 hex chars): 3A + bleCode(8) + cmdByte(2) + step(2)
-      e.g.  3A 95432482 04 01   (close, step 1)
-            3A 95432482 04 02   (close, step 2)
-            3A 95432482 03 01   (open,  step 1)  ← UNCONFIRMED, assumed mirror of close
+    Value format (14 hex chars): 3A + bleCode(8) + cmdByte(2) + actionByte(2)
+      e.g.  3A 95432482 04 01   (open)
+            3A 95432482 04 02   (close)
     """
     value = f"3A{ble_code}{cmd_byte}{step}"
     body = {
