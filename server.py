@@ -329,46 +329,35 @@ def _send_command(turn_on: bool):
     """
     Send open/close command for WiFi+BLE Sliding Gate using SET_MENU protocol.
 
-    Confirmed from mitmproxy capture (close):
-      Step 1: 3A{bleCode}0401 → response 3A{bleCode}0400
-      Step 2: 3A{bleCode}0402 → response 3A{bleCode}0402
+    Confirmed from mitmproxy captures:
+      Open:  3A{bleCode}0401 → response 3A{bleCode}01
+      Close: 3A{bleCode}0402 → response 3A{bleCode}02
 
-    Open command byte assumed to be 03 (unconfirmed — update once open traffic captured).
+    Both use cmd byte 04. The action byte is 01=open, 02=close.
     bleCode is the 8-char hex identifier in device properties, e.g. "95432482".
     """
-    label    = "Open" if turn_on else "Close"
-    cmd_byte = "03" if turn_on else "04"  # ← 03=open is ASSUMED; 04=close is CONFIRMED
+    label       = "Open" if turn_on else "Close"
+    action_byte = "01" if turn_on else "02"
 
     ble_code = session.get("ble_code")
     if not ble_code:
         log.error("bleCode not available — cannot build SET_MENU command")
         return jsonify({"success": False, "error": "bleCode not found in device properties"}), 500
 
-    log.info("%s gate: bleCode=%s cmdByte=%s", label, ble_code, cmd_byte)
+    log.info("%s gate: bleCode=%s actionByte=%s", label, ble_code, action_byte)
 
-    # Step 1
-    data1 = _send_set_menu(ble_code, cmd_byte, "01")
-    msg1  = decode_msg(data1.get("msg", "")) if data1 else "no response"
-    log.info("Step 1 response: code=%s msg=%s result=%s",
-             data1.get("code") if data1 else "none", msg1,
-             data1.get("result") if data1 else "none")
+    data = _send_set_menu(ble_code, "04", action_byte)
+    msg  = decode_msg(data.get("msg", "")) if data else "no response"
+    log.info("%s response: code=%s msg=%s result=%s",
+             label, data.get("code") if data else "none", msg,
+             data.get("result") if data else "none")
 
-    if not data1 or data1.get("code") != "0":
-        if handle_token_expiry(msg1) and ensure_session():
-            data1 = _send_set_menu(ble_code, cmd_byte, "01")
-        if not data1 or data1.get("code") != "0":
-            log.error("%s step 1 FAILED: %s", label, msg1)
-            return jsonify({"success": False, "error": f"Step 1 failed: {msg1}"}), 500
-
-    # Step 2 (confirmation — mirrors what the app sends)
-    data2 = _send_set_menu(ble_code, cmd_byte, "02")
-    msg2  = decode_msg(data2.get("msg", "")) if data2 else "no response"
-    log.info("Step 2 response: code=%s msg=%s result=%s",
-             data2.get("code") if data2 else "none", msg2,
-             data2.get("result") if data2 else "none")
-
-    if not data2 or data2.get("code") != "0":
-        log.warning("%s step 2 failed (step 1 succeeded — gate may have moved): %s", label, msg2)
+    if not data or data.get("code") != "0":
+        if handle_token_expiry(msg) and ensure_session():
+            data = _send_set_menu(ble_code, "04", action_byte)
+        if not data or data.get("code") != "0":
+            log.error("%s FAILED: %s", label, msg)
+            return jsonify({"success": False, "error": f"{label} failed: {msg}"}), 500
 
     # Upload log to match app behaviour
     _upload_log(label)
