@@ -5,4 +5,7 @@ services:
     restart: always
     ports:
       - "8765:8765"
-
+    environment:
+      - XHOUSE_EMAIL
+      - XHOUSE_PASSWORD
+      - PORT
