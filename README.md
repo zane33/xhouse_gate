@@ -87,14 +87,31 @@ Queries the X-House cloud for the current gate position.
 **Response:**
 
 ```json
-{ "state": "open" }
+{
+  "state": "open",
+  "status": "329543248202000001640F0000FF000000",
+  "menuCode": "2F95432482B00AB10AB206B306B800B900...",
+  "boardVersion": "2.0.1",
+  "bleCode": "95432482",
+  "wifiName": "TAITWHANAU2.4g",
+  "updateStatusTime": "1772720953780",
+  "1": "",
+  "2": "",
+  "3": "",
+  "4": ""
+}
 ```
 
-| `state`    | Meaning                       |
-|------------|-------------------------------|
-| `"open"`   | Gate is fully open            |
-| `"closed"` | Gate is fully closed          |
-| `"unknown"`| Could not determine (+ error) |
+| Field              | Description                                                                 |
+|--------------------|-----------------------------------------------------------------------------|
+| `state`            | Gate position: `"open"`, `"closed"`, or `"unknown"`                         |
+| `status`           | Raw hex status string from the device                                       |
+| `menuCode`         | Raw hex menu configuration                                                  |
+| `boardVersion`     | Firmware version of the gate controller                                     |
+| `bleCode`          | 8-character BLE hex identifier                                              |
+| `wifiName`         | WiFi network the gate controller is connected to                            |
+| `updateStatusTime` | Timestamp (ms) of the last status update from the device                    |
+| `1`–`4`            | Reserved device property slots (currently unused)                           |
 
 ### Open Gate
 
