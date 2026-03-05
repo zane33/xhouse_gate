@@ -260,13 +260,16 @@ def status():
             handle_token_expiry(msg)
             return jsonify({"state": "unknown", "error": msg}), 503
 
+        properties = data.get("result", {}).get("properties", [])
+        log.info("Raw properties: %s", properties)
+
         is_on = False
-        for prop in data.get("result", {}).get("properties", []):
+        for prop in properties:
             if prop.get("key") == "Switch_1":
-                # Sliding gate: 1 = fully open, 0 = fully closed, 2 = stopped/moving
                 val = prop.get("value")
-                is_on = (val == "1")
-                log.info("Switch_1 raw value: %s", val)
+                # Switch_1: "0" = open, "1" = closed (confirmed via physical testing)
+                is_on = (val == "0")
+                log.info("Switch_1 raw value: %s -> is_on=%s", val, is_on)
                 break
 
         state = "open" if is_on else "closed"
