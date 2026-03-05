@@ -54,6 +54,7 @@ session = {
     "user_id":   None,
     "device_id": None,
     "device":    None,
+    "ble_code":  None,   # 8-char hex code used in SET_MENU commands (e.g. "95432482")
 }
 
 
@@ -158,7 +159,7 @@ def do_login():
 def discover_device():
     data = api_post(
         "/group/queryGroupDevices",
-        {"userId": int(session["user_id"]), "groupId": 0},
+        {"userId": session["user_id"], "groupId": 0},
         token=session["token"],
         user_id=session["user_id"],
     )
@@ -173,8 +174,21 @@ def discover_device():
         model = (device.get("model") or "").lower()
         alias = (device.get("alias") or "").lower()
         if any(k in model or k in alias for k in GATE_KEYWORDS):
-            session["device_id"] = int(device["id"])
+            session["device_id"] = str(device["id"])
             session["device"]    = device
+
+            # Extract bleCode from device properties (used in SET_MENU commands)
+            ble_code = None
+            for prop in device.get("properties", []):
+                if prop.get("key", "").lower() in ("blecode", "ble_code", "bleaddr", "ble"):
+                    ble_code = prop.get("value", "")
+                    break
+            if ble_code:
+                session["ble_code"] = ble_code
+                log.info("bleCode from properties: %s", ble_code)
+            else:
+                log.warning("bleCode not found in properties — will derive from first command response")
+
             log.info("Using device: %s (id=%s) properties=%s",
                      device.get("alias") or device.get("model"),
                      session["device_id"],
@@ -223,6 +237,7 @@ def health():
         "status":    "ok",
         "logged_in": session["token"] is not None,
         "device_id": session.get("device_id"),
+        "ble_code":  session.get("ble_code"),
         "device":    (session["device"].get("alias") or session["device"].get("model")) if session.get("device") else None,
     })
 
@@ -235,7 +250,7 @@ def status():
 
         data = api_post(
             "/wifi/getWifiProperties",
-            {"userId": int(session["user_id"]), "deviceId": session["device_id"]},
+            {"userId": session["user_id"], "deviceId": session["device_id"]},
             token=session["token"],
             user_id=session["user_id"],
         )
@@ -275,60 +290,91 @@ def close_gate():
         return _send_command(turn_on=False)
 
 
+def _upload_log(action: str):
+    """Upload a control log entry to mirror what the app does after each command."""
+    body = {
+        "action":   action,
+        "deviceId": session["device_id"],
+    }
+    result = api_post(
+        "/bluetooth/uploadBluetoothControlLog",
+        body,
+        token=session["token"],
+        user_id=session["user_id"],
+    )
+    log.info("Log upload (%s): %s", action, result)
+
+
+def _send_set_menu(ble_code: str, cmd_byte: str, step: str) -> dict | None:
+    """
+    Send a single SET_MENU command.
+
+    Value format (14 hex chars): 3A + bleCode(8) + cmdByte(2) + step(2)
+      e.g.  3A 95432482 04 01   (close, step 1)
+            3A 95432482 04 02   (close, step 2)
+            3A 95432482 03 01   (open,  step 1)  ← UNCONFIRMED, assumed mirror of close
+    """
+    value = f"3A{ble_code}{cmd_byte}{step}"
+    body = {
+        "deviceId":      session["device_id"],
+        "propertyValue": {"type": "SET_MENU", "object": {"value": value}},
+        "userId":        session["user_id"],
+        "action":        "",
+    }
+    log.info("SET_MENU value=%s", value)
+    return api_post("/wifi/sendWifiCode", body, token=session["token"], user_id=session["user_id"])
+
+
 def _send_command(turn_on: bool):
     """
-    Send open/close command for WiFi+BLE Sliding Gate.
-    This device uses relay channels as property keys:
-      "1" = Open relay
-      "2" = Close relay
-      "3" = Stop relay
-      "4" = Pedestrian relay
+    Send open/close command for WiFi+BLE Sliding Gate using SET_MENU protocol.
+
+    Confirmed from mitmproxy capture (close):
+      Step 1: 3A{bleCode}0401 → response 3A{bleCode}0400
+      Step 2: 3A{bleCode}0402 → response 3A{bleCode}0402
+
+    Open command byte assumed to be 03 (unconfirmed — update once open traffic captured).
+    bleCode is the 8-char hex identifier in device properties, e.g. "95432482".
     """
-    # Channel 1 = Open, Channel 2 = Close
-    channel = "1" if turn_on else "2"
-    label   = "open" if turn_on else "close"
+    label    = "Open" if turn_on else "Close"
+    cmd_byte = "03" if turn_on else "04"  # ← 03=open is ASSUMED; 04=close is CONFIRMED
 
-    # Strategies to try in order
-    strategies = [
-        # Relay channel trigger - most likely for sliding gate boards
-        {"propertyValue": {channel: "1"}, "action": "On"},
-        {"propertyValue": {channel: 1},   "action": "On"},
-        # Switch_1 with string values
-        {"propertyValue": {"Switch_1": "1" if turn_on else "0"}, "action": "On" if turn_on else "Off"},
-        # Switch_1 with int values
-        {"propertyValue": {"Switch_1": 1 if turn_on else 0}, "action": "On" if turn_on else "Off"},
-        # Switch_1 with Open/Close action
-        {"propertyValue": {"Switch_1": 1 if turn_on else 0}, "action": "Open" if turn_on else "Close"},
-    ]
+    ble_code = session.get("ble_code")
+    if not ble_code:
+        log.error("bleCode not available — cannot build SET_MENU command")
+        return jsonify({"success": False, "error": "bleCode not found in device properties"}), 500
 
-    for i, strategy in enumerate(strategies):
-        body = {
-            "deviceId": int(session["device_id"]),
-            "userId":   int(session["user_id"]),
-            **strategy,
-        }
-        log.info("Strategy %d (%s): propertyValue=%s action=%s",
-                 i + 1, label, strategy["propertyValue"], strategy["action"])
+    log.info("%s gate: bleCode=%s cmdByte=%s", label, ble_code, cmd_byte)
 
-        data = api_post("/wifi/sendWifiCode", body, token=session["token"], user_id=session["user_id"])
-        msg  = decode_msg(data.get("msg", "")) if data else "no response"
-        log.info("Strategy %d response: code=%s msg=%s", i + 1, data.get("code") if data else "none", msg)
+    # Step 1
+    data1 = _send_set_menu(ble_code, cmd_byte, "01")
+    msg1  = decode_msg(data1.get("msg", "")) if data1 else "no response"
+    log.info("Step 1 response: code=%s msg=%s result=%s",
+             data1.get("code") if data1 else "none", msg1,
+             data1.get("result") if data1 else "none")
 
-        if data and data.get("code") == "0":
-            log.info("Gate command SUCCESS with strategy %d", i + 1)
-            return jsonify({"success": True})
+    if not data1 or data1.get("code") != "0":
+        if handle_token_expiry(msg1) and ensure_session():
+            data1 = _send_set_menu(ble_code, cmd_byte, "01")
+        if not data1 or data1.get("code") != "0":
+            log.error("%s step 1 FAILED: %s", label, msg1)
+            return jsonify({"success": False, "error": f"Step 1 failed: {msg1}"}), 500
 
-        if handle_token_expiry(msg):
-            if ensure_session():
-                data = api_post("/wifi/sendWifiCode", body, token=session["token"], user_id=session["user_id"])
-                if data and data.get("code") == "0":
-                    log.info("Gate command SUCCESS with strategy %d after re-login", i + 1)
-                    return jsonify({"success": True})
+    # Step 2 (confirmation — mirrors what the app sends)
+    data2 = _send_set_menu(ble_code, cmd_byte, "02")
+    msg2  = decode_msg(data2.get("msg", "")) if data2 else "no response"
+    log.info("Step 2 response: code=%s msg=%s result=%s",
+             data2.get("code") if data2 else "none", msg2,
+             data2.get("result") if data2 else "none")
 
-        log.warning("Strategy %d failed: %s", i + 1, msg)
+    if not data2 or data2.get("code") != "0":
+        log.warning("%s step 2 failed (step 1 succeeded — gate may have moved): %s", label, msg2)
 
-    log.error("All strategies failed for %s command", label)
-    return jsonify({"success": False, "error": "All strategies failed — check logs"}), 500
+    # Upload log to match app behaviour
+    _upload_log(label)
+
+    log.info("%s gate command complete", label)
+    return jsonify({"success": True})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
