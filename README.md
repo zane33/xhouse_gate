@@ -261,24 +261,36 @@ Portainer will clone the repo, build the image, and start the container. You can
 
 ### Home Assistant
 
-Add a [RESTful Cover](https://www.home-assistant.io/integrations/cover.rest/) to your `configuration.yaml`:
+Add the following to your `configuration.yaml` to create a gate cover entity using the [REST](https://www.home-assistant.io/integrations/rest/), [RESTful Command](https://www.home-assistant.io/integrations/rest_command/), and [Template](https://www.home-assistant.io/integrations/template/) integrations:
 
 ```yaml
-cover:
-  - platform: rest
-    name: Front Gate
-    device_class: gate
-    resource: http://<server-ip>:8765/status
-    state_resource: http://<server-ip>:8765/status
-    value_template: "{{ value_json.state }}"
-    state_open: "open"
-    state_closed: "closed"
-    open_cover:
-      url: http://<server-ip>:8765/open
-      method: post
-    close_cover:
-      url: http://<server-ip>:8765/close
-      method: post
+# Sensor to poll gate status
+rest:
+  - resource: http://<server-ip>:8765/status
+    scan_interval: 30
+    sensor:
+      - name: "Front Gate Status"
+        value_template: "{{ value_json.state }}"
+
+# Commands to open/close the gate
+rest_command:
+  open_front_gate:
+    url: http://<server-ip>:8765/open
+    method: post
+  close_front_gate:
+    url: http://<server-ip>:8765/close
+    method: post
+
+# Template cover that ties the sensor and commands together
+template:
+  - cover:
+      - name: Front Gate
+        device_class: gate
+        state: "{{ states('sensor.front_gate_status') }}"
+        open_cover:
+          action: rest_command.open_front_gate
+        close_cover:
+          action: rest_command.close_front_gate
 ```
 
 Replace `<server-ip>` with the IP or hostname of the machine running the container.
